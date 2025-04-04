@@ -1,0 +1,190 @@
+import os
+import torch
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+from ultralytics import YOLO
+from Backend.create_data_yaml import create_data_yaml
+
+def train_detector(data_yaml_path, epochs=100, batch=16):
+    """
+    训练YOLOv8车辆检测器
+    
+    Args:
+        data_yaml_path: 数据配置文件路径
+        epochs: 训练轮数
+        batch: 批次大小
+    """
+    print("开始训练车辆检测器...")
+    
+    # 创建输出目录
+    os.makedirs("models", exist_ok=True)
+    
+    # 初始化YOLOv8模型
+    model = YOLO('yolov8n.pt')  # 使用预训练的YOLOv8n
+    
+    # 训练模型
+    results = model.train(
+        data=data_yaml_path,
+        epochs=epochs,
+        imgsz=640,
+        batch=batch,
+        name='vehicle_detection'
+    )
+    
+    print("车辆检测器训练完成！")
+    return model
+
+def train_classifier(crops_dir, batch_size=32, epochs=50):
+    """
+    训练车辆分类器
+    
+    Args:
+        crops_dir: 车辆裁剪图像目录
+        batch_size: 批次大小
+        epochs: 训练轮数
+    """
+    print("开始训练车辆分类器...")
+    
+    # 检查是否有足够的类别
+    train_dir = os.path.join(crops_dir, 'train')
+    class_dirs = [d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))]
+    
+    if len(class_dirs) <= 1:
+        print("警告：类别数量不足，无法训练分类器")
+        return None
+    
+    # 数据增强和预处理
+    train_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # 加载数据集
+    try:
+        train_dataset = datasets.ImageFolder(train_dir, transform=train_transform)
+        
+        val_dir = os.path.join(crops_dir, 'val')
+        val_dataset = datasets.ImageFolder(val_dir, transform=val_transform)
+        
+        # 创建数据加载器
+        train_loader = DataLoader(
+            train_dataset, batch_size=batch_size, shuffle=True, num_workers=4
+        )
+        
+        val_loader = DataLoader(
+            val_dataset, batch_size=batch_size, shuffle=False, num_workers=4
+        )
+    except Exception as e:
+        print(f"加载数据集时出错：{e}")
+        return None
+    
+    # 获取类别数量
+    num_classes = len(train_dataset.classes)
+    print(f"检测到 {num_classes} 个车辆类别")
+    
+    # 保存类别映射
+    class_to_idx = train_dataset.class_to_idx
+    idx_to_class = {v: k for k, v in class_to_idx.items()}
+    
+    with open('models/classifier_class_mapping.txt', 'w') as f:
+        for class_name, idx in class_to_idx.items():
+            f.write(f"{idx}: {class_name}\n")
+    
+    # 初始化分类器
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
+    
+    # 修改最后一层以匹配类别数量
+    in_features = model.fc.in_features
+    model.fc = torch.nn.Linear(in_features, num_classes)
+    model = model.to(device)
+    
+    # 定义损失函数和优化器
+    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.1, patience=5, verbose=True
+    )
+    
+    # 训练模型
+    best_val_loss = float('inf')
+    
+    for epoch in range(epochs):
+        # 训练阶段
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        
+        for inputs, targets in train_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, targets)
+            loss.backward()
+            optimizer.step()
+            
+            train_loss += loss.item() * inputs.size(0)
+            _, predicted = outputs.max(1)
+            train_total += targets.size(0)
+            train_correct += predicted.eq(targets).sum().item()
+        
+        train_loss = train_loss / len(train_loader.dataset)
+        train_acc = train_correct / train_total
+        
+        # 验证阶段
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                
+                val_loss += loss.item() * inputs.size(0)
+                _, predicted = outputs.max(1)
+                val_total += targets.size(0)
+                val_correct += predicted.eq(targets).sum().item()
+        
+        val_loss = val_loss / len(val_loader.dataset)
+        val_acc = val_correct / val_total
+        
+        # 更新学习率
+        scheduler.step(val_loss)
+        
+        print(f'Epoch {epoch+1}/{epochs} | '
+              f'Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | '
+              f'Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
+        
+        # 保存最佳模型
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), 'models/best_vehicle_classifier.pth')
+    
+    print("车辆分类器训练完成！")
+    return model
+
+if __name__ == "__main__":
+    # 创建数据配置文件
+    data_yaml_path = create_data_yaml("data/processed")
+    
+    # 训练检测器
+    detector = train_detector(data_yaml_path, epochs=100)
+    
+    # 训练分类器
+    classifier = train_classifier("data/vehicle_crops", epochs=50)

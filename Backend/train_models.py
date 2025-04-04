@@ -17,21 +17,32 @@ def train_detector(data_yaml_path, epochs=100, batch=16):
     print("开始训练车辆检测器...")
     
     # 创建输出目录
-    os.makedirs("models", exist_ok=True)
+    output_dir = os.path.join(os.getcwd(), "models")
+    os.makedirs(output_dir, exist_ok=True)
     
     # 初始化YOLOv8模型
-    model = YOLO('yolov8n.pt')  # 使用预训练的YOLOv8n
+    # 指定缓存目录为项目目录下的.cache文件夹
+    cache_dir = os.path.join(os.getcwd(), ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["TORCH_HOME"] = cache_dir
     
-    # 训练模型
+    # 使用预训练的YOLOv8n，但指定下载位置
+    model = YOLO('yolov8n.pt')
+    
+    # 训练模型，明确指定项目路径
     results = model.train(
         data=data_yaml_path,
         epochs=epochs,
         imgsz=640,
         batch=batch,
-        name='vehicle_detection'
+        project=output_dir,  # 指定项目路径
+        name='vehicle_detection',
+        exist_ok=True,
+        cache=True  # 使用缓存加速
     )
     
     print("车辆检测器训练完成！")
+    print(f"模型保存在: {os.path.join(output_dir, 'vehicle_detection')}")
     return model
 
 def train_classifier(crops_dir, batch_size=32, epochs=50):
@@ -44,6 +55,15 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
         epochs: 训练轮数
     """
     print("开始训练车辆分类器...")
+    
+    # 创建输出目录
+    output_dir = os.path.join(os.getcwd(), "models")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 指定缓存目录
+    cache_dir = os.path.join(os.getcwd(), ".cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["TORCH_HOME"] = cache_dir
     
     # 检查是否有足够的类别
     train_dir = os.path.join(crops_dir, 'train')
@@ -96,13 +116,14 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
     class_to_idx = train_dataset.class_to_idx
     idx_to_class = {v: k for k, v in class_to_idx.items()}
     
-    with open('models/classifier_class_mapping.txt', 'w') as f:
+    class_mapping_path = os.path.join(output_dir, 'classifier_class_mapping.txt')
+    with open(class_mapping_path, 'w') as f:
         for class_name, idx in class_to_idx.items():
             f.write(f"{idx}: {class_name}\n")
     
     # 初始化分类器
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True)
+    model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=True, force_reload=False)
     
     # 修改最后一层以匹配类别数量
     in_features = model.fc.in_features
@@ -118,6 +139,8 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
     
     # 训练模型
     best_val_loss = float('inf')
+    best_model_path = os.path.join(output_dir, 'best_vehicle_classifier.pth')
+    checkpoint_path = os.path.join(output_dir, 'vehicle_classifier_checkpoint.pth')
     
     for epoch in range(epochs):
         # 训练阶段
@@ -171,12 +194,22 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
               f'Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | '
               f'Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}')
         
+        # 保存检查点
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'val_loss': val_loss,
+        }, checkpoint_path)
+        
         # 保存最佳模型
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save(model.state_dict(), 'models/best_vehicle_classifier.pth')
+            torch.save(model.state_dict(), best_model_path)
+            print(f"保存最佳模型，验证损失: {val_loss:.4f}")
     
     print("车辆分类器训练完成！")
+    print(f"最佳模型保存在: {best_model_path}")
     return model
 
 if __name__ == "__main__":

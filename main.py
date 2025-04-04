@@ -6,6 +6,30 @@ from Backend.create_data_yaml import create_data_yaml
 from Backend.train_models import train_detector, train_classifier
 from Backend.inference import VehicleDetectionSystem
 
+def setup_environment():
+    """设置环境变量，确保所有缓存和临时文件都保存在项目目录中"""
+    import os
+    
+    # 创建必要的目录
+    project_dir = os.getcwd()
+    cache_dir = os.path.join(project_dir, ".cache")
+    temp_dir = os.path.join(project_dir, ".temp")
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    # 设置环境变量
+    os.environ["TORCH_HOME"] = cache_dir
+    os.environ["ULTRALYTICS_HOME"] = cache_dir  # YOLO缓存
+    os.environ["TMPDIR"] = temp_dir
+    os.environ["TEMP"] = temp_dir
+    os.environ["TMP"] = temp_dir
+    
+    print(f"环境变量已设置，所有缓存和临时文件将保存在项目目录中")
+
+# 在导入其他模块之前设置环境变量
+setup_environment()
+
 def parse_args():
     parser = argparse.ArgumentParser(description='车辆检测与分类系统')
     parser.add_argument('--mode', type=str, default='all', choices=['download', 'preprocess', 'train', 'infer', 'all', 'check_gpu'], 

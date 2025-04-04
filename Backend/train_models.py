@@ -41,7 +41,7 @@ def train_detector(data_yaml_path, epochs=100, batch=16, patience=10):
     # 使用预训练的YOLOv8n，但指定下载位置
     model = YOLO('yolov8n.pt')
     
-    # 训练模型，明确指定项目路径，并添加早停机制
+    # 训练模型，明确指定项目路径，添加早停但保持其他参数不变
     results = model.train(
         data=data_yaml_path,
         epochs=epochs,

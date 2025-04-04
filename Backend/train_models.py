@@ -5,7 +5,7 @@ from torchvision import datasets, transforms
 from ultralytics import YOLO
 from Backend.create_data_yaml import create_data_yaml
 
-def train_detector(data_yaml_path, epochs=100, batch=16):
+def train_detector(data_yaml_path, epochs=100, batch=16, patience=10):
     """
     训练YOLOv8车辆检测器
     
@@ -13,11 +13,23 @@ def train_detector(data_yaml_path, epochs=100, batch=16):
         data_yaml_path: 数据配置文件路径
         epochs: 训练轮数
         batch: 批次大小
+        patience: 早停耐心值，连续多少个epoch没有改善则停止训练
     """
     print("开始训练车辆检测器...")
     
-    # 创建输出目录
+    # 检查是否已有训练好的模型
     output_dir = os.path.join(os.getcwd(), "models")
+    os.makedirs(output_dir, exist_ok=True)
+    model_path = os.path.join(output_dir, 'vehicle_detection', 'weights', 'best.pt')
+    
+    if os.path.exists(model_path):
+        print(f"检测到已有训练好的车辆检测模型: {model_path}")
+        user_input = input("是否要重新训练模型？(y/n): ")
+        if user_input.lower() != 'y':
+            print("跳过训练，使用已有模型")
+            return YOLO(model_path)
+    
+    # 创建输出目录
     os.makedirs(output_dir, exist_ok=True)
     
     # 初始化YOLOv8模型
@@ -29,7 +41,7 @@ def train_detector(data_yaml_path, epochs=100, batch=16):
     # 使用预训练的YOLOv8n，但指定下载位置
     model = YOLO('yolov8n.pt')
     
-    # 训练模型，明确指定项目路径
+    # 训练模型，明确指定项目路径，并添加早停机制
     results = model.train(
         data=data_yaml_path,
         epochs=epochs,
@@ -38,14 +50,15 @@ def train_detector(data_yaml_path, epochs=100, batch=16):
         project=output_dir,  # 指定项目路径
         name='vehicle_detection',
         exist_ok=True,
-        cache=True  # 使用缓存加速
+        cache=True,  # 使用缓存加速
+        patience=patience  # 添加早停机制
     )
     
     print("车辆检测器训练完成！")
     print(f"模型保存在: {os.path.join(output_dir, 'vehicle_detection')}")
     return model
 
-def train_classifier(crops_dir, batch_size=32, epochs=50):
+def train_classifier(crops_dir, batch_size=32, epochs=50, patience=10):
     """
     训练车辆分类器
     
@@ -53,12 +66,35 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
         crops_dir: 车辆裁剪图像目录
         batch_size: 批次大小
         epochs: 训练轮数
+        patience: 早停耐心值，连续多少个epoch验证损失没有改善则停止训练
     """
     print("开始训练车辆分类器...")
     
     # 创建输出目录
     output_dir = os.path.join(os.getcwd(), "models")
     os.makedirs(output_dir, exist_ok=True)
+    
+    # 检查是否已有训练好的模型
+    best_model_path = os.path.join(output_dir, 'best_vehicle_classifier.pth')
+    if os.path.exists(best_model_path):
+        print(f"检测到已有训练好的车辆分类模型: {best_model_path}")
+        user_input = input("是否要重新训练模型？(y/n): ")
+        if user_input.lower() != 'y':
+            print("跳过训练，使用已有模型")
+            # 加载已有模型
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            # 需要获取类别数量，从mapping文件读取
+            class_mapping_path = os.path.join(output_dir, 'classifier_class_mapping.txt')
+            if os.path.exists(class_mapping_path):
+                with open(class_mapping_path, 'r') as f:
+                    lines = f.readlines()
+                num_classes = len(lines)
+                model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=False)
+                in_features = model.fc.in_features
+                model.fc = torch.nn.Linear(in_features, num_classes)
+                model.load_state_dict(torch.load(best_model_path, map_location=device))
+                model = model.to(device)
+                return model
     
     # 指定缓存目录
     cache_dir = os.path.join(os.getcwd(), ".cache")
@@ -142,6 +178,12 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
     best_model_path = os.path.join(output_dir, 'best_vehicle_classifier.pth')
     checkpoint_path = os.path.join(output_dir, 'vehicle_classifier_checkpoint.pth')
     
+    # 添加早停机制
+    early_stopping_counter = 0
+    
+    # 用于进度显示
+    from tqdm import tqdm
+    
     for epoch in range(epochs):
         # 训练阶段
         model.train()
@@ -149,7 +191,9 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
         train_correct = 0
         train_total = 0
         
-        for inputs, targets in train_loader:
+        # 添加进度条
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs} [Train]")
+        for inputs, targets in train_pbar:
             inputs, targets = inputs.to(device), targets.to(device)
             
             optimizer.zero_grad()
@@ -162,6 +206,13 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
             _, predicted = outputs.max(1)
             train_total += targets.size(0)
             train_correct += predicted.eq(targets).sum().item()
+            
+            # 更新进度条
+            train_acc = train_correct / train_total if train_total > 0 else 0
+            train_pbar.set_postfix({
+                'loss': f"{loss.item():.4f}",
+                'acc': f"{train_acc:.4f}"
+            })
         
         train_loss = train_loss / len(train_loader.dataset)
         train_acc = train_correct / train_total
@@ -172,8 +223,10 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
         val_correct = 0
         val_total = 0
         
+        # 添加验证进度条
+        val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{epochs} [Val]")
         with torch.no_grad():
-            for inputs, targets in val_loader:
+            for inputs, targets in val_pbar:
                 inputs, targets = inputs.to(device), targets.to(device)
                 
                 outputs = model(inputs)
@@ -183,6 +236,13 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
                 _, predicted = outputs.max(1)
                 val_total += targets.size(0)
                 val_correct += predicted.eq(targets).sum().item()
+                
+                # 更新进度条
+                val_acc = val_correct / val_total if val_total > 0 else 0
+                val_pbar.set_postfix({
+                    'loss': f"{loss.item():.4f}",
+                    'acc': f"{val_acc:.4f}"
+                })
         
         val_loss = val_loss / len(val_loader.dataset)
         val_acc = val_correct / val_total
@@ -207,6 +267,17 @@ def train_classifier(crops_dir, batch_size=32, epochs=50):
             best_val_loss = val_loss
             torch.save(model.state_dict(), best_model_path)
             print(f"保存最佳模型，验证损失: {val_loss:.4f}")
+            # 重置早停计数器
+            early_stopping_counter = 0
+        else:
+            # 增加早停计数器
+            early_stopping_counter += 1
+            print(f"验证损失没有改善，早停计数: {early_stopping_counter}/{patience}")
+            
+            # 检查是否应该早停
+            if early_stopping_counter >= patience:
+                print(f"早停触发！连续 {patience} 个epoch验证损失没有改善")
+                break
     
     print("车辆分类器训练完成！")
     print(f"最佳模型保存在: {best_model_path}")
@@ -217,7 +288,7 @@ if __name__ == "__main__":
     data_yaml_path = create_data_yaml("data/processed")
     
     # 训练检测器
-    detector = train_detector(data_yaml_path, epochs=100)
+    detector = train_detector(data_yaml_path, epochs=100, patience=10)
     
     # 训练分类器
-    classifier = train_classifier("data/vehicle_crops", epochs=50)
+    classifier = train_classifier("data/vehicle_crops", epochs=50, patience=10)

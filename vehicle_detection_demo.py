@@ -17,48 +17,48 @@ class VehicleDetectionSystem:
             class_mapping_path="models/classifier_class_mapping.txt",
             conf_threshold=0.25
     ):
-        st.text("初始化车辆检测与分类系统...")
+        st.text("Initializing the vehicle detection and classification system...")
 
-        # 保存路径和参数
+        # Save paths and parameters
         self.detector_path = detector_path
         self.classifier_path = classifier_path
         self.class_mapping_path = class_mapping_path
         self.conf_threshold = conf_threshold
 
-        # 加载检测器
-        st.text("加载车辆检测器...")
+        # Load the detector
+        st.text("Loading the vehicle detector...")
         self.detector = YOLO(detector_path)
 
-        # 加载类别映射
-        st.text("加载类别映射...")
+        # Load the class mapping
+        st.text("Loading the class mapping...")
         self.class_mapping = self.load_class_mapping()
 
-        # 加载分类器
-        st.text("加载车辆分类器...")
+        # Load the classifier
+        st.text("Loading the vehicle classifier...")
         num_classes = len(self.class_mapping)
         self.classifier, self.device = self.load_classifier(num_classes)
 
-        # 定义变换
+        # Define the transformation
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
-        st.text("系统初始化完成！")
+        st.text("System initialization completed!")
 
     def load_classifier(self, num_classes):
-        """加载分类器模型"""
+        """Load the classifier model"""
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        st.text(f"使用设备: {device}")
+        st.text(f"Using device: {device}")
 
         model = torch.hub.load('pytorch/vision:v0.10.0', 'resnet50', pretrained=False)
 
-        # 修改最后一层以匹配类别数量
+        # Modify the last layer to match the number of classes
         in_features = model.fc.in_features
         model.fc = torch.nn.Linear(in_features, num_classes)
 
-        # 加载训练好的权重
+        # Load the trained weights
         model.load_state_dict(torch.load(self.classifier_path, map_location=device))
         model = model.to(device)
         model.eval()
@@ -66,7 +66,7 @@ class VehicleDetectionSystem:
         return model, device
 
     def load_class_mapping(self):
-        """加载类别映射"""
+        """Load the class mapping"""
         class_mapping = {}
         with open(self.class_mapping_path, 'r') as f:
             for line in f:
@@ -78,16 +78,16 @@ class VehicleDetectionSystem:
         return class_mapping
 
     def classify_vehicle(self, crop_img):
-        """对车辆裁剪图像进行分类"""
-        # 将OpenCV图像转换为PIL图像
+        """Classify the cropped vehicle image"""
+        # Convert the OpenCV image to a PIL image
         if isinstance(crop_img, np.ndarray):
             crop_img = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
             crop_img = Image.fromarray(crop_img)
 
-        # 应用变换
+        # Apply the transformation
         input_tensor = self.transform(crop_img).unsqueeze(0).to(self.device)
 
-        # 进行预测
+        # Make a prediction
         with torch.no_grad():
             output = self.classifier(input_tensor)
             probabilities = torch.nn.functional.softmax(output, dim=1)[0]
@@ -95,63 +95,63 @@ class VehicleDetectionSystem:
 
         class_idx = predicted.item()
         confidence = probabilities[class_idx].item()
-        class_name = self.class_mapping.get(class_idx, f"未知类别({class_idx})")
+        class_name = self.class_mapping.get(class_idx, f"Unknown class ({class_idx})")
 
         return class_name, confidence
 
     def process_image(self, image):
-        """处理图像，检测并分类车辆"""
+        """Process an image, detect and classify vehicles"""
         if image is None:
-            st.error("请先上传图像")
-            return None, "未检测到图像"
+            st.error("Please upload an image first")
+            return None, "No image detected"
 
-        # 转换为OpenCV格式
+        # Convert to OpenCV format
         if isinstance(image, np.ndarray) and len(image.shape) == 3 and image.shape[2] == 4:
-            # 如果图像是RGBA格式，转换为RGB
+            # If the image is in RGBA format, convert it to RGB
             image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
 
-        # 保存临时图像
+        # Save the temporary image
         temp_path = "temp_image.jpg"
         cv2.imwrite(temp_path, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
 
-        # 读取图像
+        # Read the image
         img = cv2.imread(temp_path)
         if img is None:
-            st.error("无法读取图像")
-            return None, "无法读取图像"
+            st.error("Unable to read the image")
+            return None, "Unable to read the image"
 
-        # 运行检测
+        # Run the detection
         results = self.detector(img, conf=self.conf_threshold)
 
-        # 创建结果图像的副本
+        # Create a copy of the result image
         result_img = img.copy()
 
-        # 存储检测结果
+        # Store the detection results
         detections = []
 
-        # 处理每个检测结果
+        # Process each detection result
         for i, det in enumerate(results[0].boxes):
             x1, y1, x2, y2 = map(int, det.xyxy[0].cpu().numpy())
             conf = float(det.conf[0].cpu().numpy())
 
-            # 裁剪车辆图像
+            # Crop the vehicle image
             crop_img = img[y1:y2, x1:x2]
             if crop_img.size == 0:
                 continue
 
-            # 分类车辆
+            # Classify the vehicle
             class_name, class_conf = self.classify_vehicle(crop_img)
 
-            # 绘制检测框
+            # Draw the detection box
             cv2.rectangle(result_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # 绘制标签
+            # Draw the label
             label = f"{class_name} {conf:.2f}"
             t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0]
             cv2.rectangle(result_img, (x1, y1 - t_size[1] - 10), (x1 + t_size[0], y1), (0, 255, 0), -1)
             cv2.putText(result_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
 
-            # 保存检测结果
+            # Save the detection result
             detections.append({
                 "bbox": [x1, y1, x2, y2],
                 "confidence": conf,
@@ -159,11 +159,11 @@ class VehicleDetectionSystem:
                 "class_confidence": class_conf
             })
 
-        # 删除临时文件
+        # Delete the temporary file
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
-        # 统计检测到的车辆类型
+        # Count the detected vehicle types
         vehicle_counts = {}
         for det in detections:
             vehicle_type = det["class_name"]
@@ -172,144 +172,143 @@ class VehicleDetectionSystem:
             else:
                 vehicle_counts[vehicle_type] = 1
 
-        # 生成统计信息
-        stats = f"检测到 {len(detections)} 辆车:\n"
+        # Generate the statistics
+        stats = f"Detected {len(detections)} vehicles:\n"
         for vehicle_type, count in vehicle_counts.items():
-            stats += f"- {vehicle_type}: {count} 辆\n"
+            stats += f"- {vehicle_type}: {count} vehicles\n"
 
-        # 转换为RGB以便Streamlit显示
+        # Convert to RGB for Streamlit display
         result_img = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
 
         return result_img, stats
 
     def process_video(self, video_file):
-        """处理视频，检测并分类车辆"""
+        """Process a video, detect and classify vehicles"""
         if video_file is None:
-            st.error("请先上传视频")
+            st.error("Please upload a video first")
             return None, None
-    
-        # 保存临时视频
+
+        # Save the temporary video
         temp_path = "temp_video.mp4"
         with open(temp_path, "wb") as f:
             f.write(video_file.read())
-    
+
         output_path = os.path.join(os.getcwd(), "results", "processed_video.mp4")
-        print(f"输出路径: {output_path}")  # 添加打印语句查看路径
+        print(f"Output path: {output_path}")  # Add a print statement to check the path
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-        # 打开视频
+
+        # Open the video
         cap = cv2.VideoCapture(temp_path)
         if not cap.isOpened():
-            st.error("无法打开视频")
+            st.error("Unable to open the video")
             return None, None
-    
-        # 获取视频信息
+
+        # Get the video information
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-        st.text(f"视频信息: {width}x{height}, {fps} FPS, {total_frames} 帧")
-    
-        # 创建输出视频
+
+        st.text(f"Video information: {width}x{height}, {fps} FPS, {total_frames} frames")
+
+        # Create the output video
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
         if not out.isOpened():
-            st.error("无法创建输出视频文件")
+            st.error("Unable to create the output video file")
             cap.release()
             return None, None
-    
-        # 创建进度条
+
+        # Create the progress bar
         progress_bar = st.progress(0)
         status_text = st.empty()
-    
+
         frame_count = 0
-        vehicle_counts = {}  # 用于统计车辆类型
-    
-        # 处理每一帧
+        vehicle_counts = {}  # Used to count vehicle types
+
+        # Process each frame
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-    
+
             frame_count += 1
             progress = frame_count / total_frames
             progress_bar.progress(progress)
-            status_text.text(f"处理帧 {frame_count}/{total_frames} ({progress * 100:.1f}%)")
-    
-            # 运行检测
+            status_text.text(f"Processing frame {frame_count}/{total_frames} ({progress * 100:.1f}%)")
+
+            # Run the detection
             results = self.detector(frame, conf=self.conf_threshold)
-    
-            # 创建结果帧的副本
+
+            # Create a copy of the result frame
             result_frame = frame.copy()
-    
-            # 处理每个检测结果
+
+            # Process each detection result
             for i, det in enumerate(results[0].boxes):
                 x1, y1, x2, y2 = map(int, det.xyxy[0].cpu().numpy())
                 conf = float(det.conf[0].cpu().numpy())
-    
-                # 裁剪车辆图像
+
+                # Crop the vehicle image
                 crop_img = frame[y1:y2, x1:x2]
                 if crop_img.size == 0:
                     continue
-    
-                # 分类车辆
+
+                # Classify the vehicle
                 class_name, class_conf = self.classify_vehicle(crop_img)
-    
-                # 更新车辆统计
+
+                # Update the vehicle statistics
                 if class_name in vehicle_counts:
                     vehicle_counts[class_name] += 1
                 else:
                     vehicle_counts[class_name] = 1
-    
-                # 绘制检测框
+
+                # Draw the detection box
                 cv2.rectangle(result_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    
-                # 绘制标签
+
+                # Draw the label
                 label = f"{class_name} {conf:.2f}"
                 t_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0]
                 cv2.rectangle(result_frame, (x1, y1 - t_size[1] - 10), (x1 + t_size[0], y1), (0, 255, 0), -1)
                 cv2.putText(result_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
-    
-            # 添加帧计数器
+
+            # Add the frame counter
             cv2.putText(result_frame, f"Frame: {frame_count}/{total_frames}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    
-            # 写入输出视频
+
+            # Write the output video
             try:
                 out.write(result_frame)
             except Exception as e:
-                st.error(f"写入帧时出错: {e}")
-                break
-    
-        # 释放资源
+                st.error(f"Error writing frame: {e}")
+
+        # Release the resources
         cap.release()
         out.release()
-    
-        # 删除临时文件
+
+        # Delete the temporary file
         if os.path.exists(temp_path):
             os.remove(temp_path)
-    
-        status_text.text(f"处理完成! 共处理 {frame_count} 帧")
-        st.success(f"处理后的视频已保存到: {output_path}")
-    
-        # 生成统计信息
+
+        status_text.text(f"Processing completed! A total of {frame_count} frames were processed.")
+        st.success(f"The processed video has been saved to: {output_path}")
+
+        # Generate the statistics
         total_vehicles = sum(vehicle_counts.values())
-        stats = f"视频中检测到 {total_vehicles} 辆车:\n"
+        stats = f"A total of {total_vehicles} vehicles were detected in the video:\n"
         for vehicle_type, count in vehicle_counts.items():
-            stats += f"- {vehicle_type}: {count} 辆\n"
-    
+            stats += f"- {vehicle_type}: {count} vehicles\n"
+
         return output_path, stats, width, height, fps, total_frames, frame_count
 
 
 def main():
     st.set_page_config(
-        page_title="车辆检测与分类系统",
+        page_title="Vehicle Detection and Classification System",
         page_icon="🚗",
         layout="wide"
     )
 
-    # 设置全局样式
+    # Set the global style
     st.markdown("""
     <style>
     .stTabs [data-baseweb="tab-list"] {
@@ -367,10 +366,10 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("车辆检测与分类系统")
-    st.markdown("上传图像或视频，系统将自动检测和分类车辆")
+    st.title("Vehicle Detection and Classification System")
+    st.markdown("Upload an image or video, and the system will automatically detect and classify vehicles.")
 
-    # 初始化系统（仅在第一次运行时）
+    # Initialize the system (only on the first run)
     @st.cache_resource
     def load_detection_system():
         return VehicleDetectionSystem(
@@ -380,94 +379,94 @@ def main():
             conf_threshold=0.25
         )
 
-    # 使用try-except捕获可能的初始化错误
+    # Use try-except to catch possible initialization errors
     try:
         system = load_detection_system()
     except Exception as e:
-        st.error(f"系统初始化失败: {str(e)}")
-        st.error("请确保模型文件存在于正确的路径")
+        st.error(f"System initialization failed: {str(e)}")
+        st.error("Please ensure that the model files exist in the correct paths.")
         st.stop()
 
-    # 创建选项卡
-    tab1, tab2 = st.tabs(["图像检测", "视频检测"])
+    # Create tabs
+    tab1, tab2 = st.tabs(["Image Detection", "Video Detection"])
 
-    # 图像检测选项卡
+    # Image detection tab
     with tab1:
-        st.header("图像检测")
+        st.header("Image Detection")
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### 输入图像")
-            
-            # 直接使用Streamlit的上传控件
-            uploaded_image = st.file_uploader("上传图像", type=["jpg", "jpeg", "png"], key="image_uploader")
-            
-            # 显示检测按钮在上传控件下方
+            st.markdown("### Input Image")
+
+            # Use Streamlit's upload control directly
+            uploaded_image = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"], key="image_uploader")
+
+            # Display the detection button below the upload control
             if uploaded_image is not None:
-                # 显示检测按钮在上传控件和图像之间
-                if st.button("开始检测", key="image_detect"):
-                    with st.spinner("正在处理图像..."):
+                # Display the detection button between the upload control and the image
+                if st.button("Start Detection", key="image_detect"):
+                    with st.spinner("Processing the image..."):
                         result_img, stats = system.process_image(np.array(Image.open(uploaded_image)))
                         st.session_state.result_img = result_img
                         st.session_state.stats = stats
-            
-            # 仅当上传了图像时才显示图像
+
+            # Display the image only when an image is uploaded
             if uploaded_image is not None:
                 image = Image.open(uploaded_image)
-                st.image(image, caption="上传的图像", use_column_width=True)
+                st.image(image, caption="Uploaded Image", use_column_width=True)
 
         with col2:
-            st.markdown("### 检测结果")
+            st.markdown("### Detection Results")
             if 'result_img' in st.session_state and st.session_state.result_img is not None:
-                # 创建结果容器
+                # Create a result container
                 result_container = st.container()
                 with result_container:
-                    # 先显示统计信息
+                    # Display the statistics first
                     stats_html = f"""
                     <div class="stats-card">
-                        <h4>统计信息</h4>
+                        <h4>Statistics</h4>
                         <pre>{st.session_state.stats.replace(chr(10), '<br>')}</pre>
                     </div>
                     """
                     st.markdown(stats_html, unsafe_allow_html=True)
-                    
-                    # 再显示检测结果图像
-                    st.image(st.session_state.result_img, caption="检测结果", use_column_width=True)
+
+                    # Then display the detection result image
+                    st.image(st.session_state.result_img, caption="Detection Results", use_column_width=True)
             else:
-                # 创建空结果区域
+                # Create an empty result area
                 st.markdown("""
                 <div class="empty-result">
                     <div class="empty-icon">🔍</div>
-                    <div class="empty-text">请上传图像并点击开始检测查看结果</div>
+                    <div class="empty-text">Please upload an image and click Start Detection to view the results.</div>
                 </div>
                 """, unsafe_allow_html=True)
 
-    # 视频检测选项卡
+    # Video detection tab
     with tab2:
-        st.header("视频检测")
+        st.header("Video Detection")
         col1, col2 = st.columns(2)
 
         with col1:
-            st.markdown("### 上传视频")
-            uploaded_video = st.file_uploader("点击或拖拽视频到此处", type=["mp4", "avi", "mov"], label_visibility='hidden')
+            st.markdown("### Upload Video")
+            uploaded_video = st.file_uploader("Click or drag a video here", type=["mp4", "avi", "mov"], label_visibility='hidden')
             if uploaded_video is not None:
                 st.video(uploaded_video)
 
         with col2:
-            st.markdown("### 处理结果")
+            st.markdown("### Processing Results")
             if uploaded_video is not None:
-                if st.button("开始检测", key="video_detect"):
-                    with st.spinner("正在处理视频..."):
+                if st.button("Start Detection", key="video_detect"):
+                    with st.spinner("Processing the video..."):
                         output_path, stats, width, height, fps, total_frames, frame_count = system.process_video(uploaded_video)
                         st.session_state.output_path = output_path
                         st.session_state.video_stats = stats
                         if output_path and os.path.exists(output_path):
-                            st.success("视频处理完成!")
-                            st.text(f"视频信息: {width}x{height}, {fps} FPS, {total_frames} 帧")
-                            st.text(f"处理完成! 共处理 {frame_count} 帧")
-                            st.text(f"处理后的视频已保存到: {output_path}")
+                            st.success("Video processing completed!")
+                            st.text(f"Video information: {width}x{height}, {fps} FPS, {total_frames} frames")
+                            st.text(f"Processing completed! A total of {frame_count} frames were processed.")
+                            st.text(f"The processed video has been saved to: {output_path}")
                         else:
-                            st.error("视频处理失败")
+                            st.error("Video processing failed.")
 
             if 'output_path' in st.session_state and st.session_state.output_path and os.path.exists(st.session_state.output_path):
                 try:
@@ -477,32 +476,32 @@ def main():
                     video_html = f"""
                     <video width="100%" controls>
                         <source src="data:video/mp4;base64,{video_base64}" type="video/mp4">
-                        您的浏览器不支持视频标签。
+                        Your browser does not support the video tag.
                     </video>
                     """
                     st.markdown(video_html, unsafe_allow_html=True)
                 except Exception as e:
-                    st.error(f"展示视频时出错: {e}")
+                    st.error(f"Error displaying the video: {e}")
             else:
-                st.info("请上传视频并点击开始检测查看结果")
+                st.info("Please upload a video and click Start Detection to view the results.")
 
-            # 显示统计信息
+            # Display the statistics
             if 'video_stats' in st.session_state:
                 stats_html = f"""
                 <div class="stats-card">
-                    <h4>统计信息</h4>
+                    <h4>Statistics</h4>
                     <pre>{st.session_state.video_stats.replace(chr(10), '<br>')}</pre>
                 </div>
                 """
                 st.markdown(stats_html, unsafe_allow_html=True)
 
-        # 视频处理说明
-        with st.expander("视频处理说明"):
+        # Video processing instructions
+        with st.expander("Video Processing Instructions"):
             st.markdown("""
-            - 视频处理可能需要较长时间，请耐心等待
-            - 处理后的视频将显示检测框和分类结果
-            - 处理速度取决于视频长度和分辨率
-            - 处理后的视频将保存在results目录下
+            - Video processing may take a long time. Please be patient.
+            - The processed video will display detection boxes and classification results.
+            - The processing speed depends on the video length and resolution.
+            - The processed video will be saved in the results directory.
             """)
 
 
